@@ -1,0 +1,2 @@
+cd C:/Users/user/Desktop/Capstone
+streamlit run "Q-COST AI APP.py"
