@@ -15,7 +15,6 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 import shap
 import matplotlib.pyplot as plt
 
-# XGBoost는 선택적으로 사용 (없으면 랜덤포레스트만 사용)
 try:
     import xgboost as xgb
     XGBOOST_AVAILABLE = True
@@ -26,6 +25,32 @@ except ImportError:
 # -----------------------
 # 유틸 함수들
 # -----------------------
+def read_csv_auto(file_obj):
+    """
+    업로드된 CSV 파일을 인코딩을 바꿔 가며 읽는 함수.
+    UTF-8이 안 되면 cp949, 그래도 안 되면 ISO-8859-1 시도.
+    """
+    import pandas as pd
+
+    # 1) UTF-8 먼저 시도
+    try:
+        file_obj.seek(0)
+        return pd.read_csv(file_obj, encoding="utf-8")
+    except UnicodeDecodeError:
+        pass
+
+    # 2) cp949 (한글 윈도우 기본)
+    try:
+        file_obj.seek(0)
+        return pd.read_csv(file_obj, encoding="cp949")
+    except UnicodeDecodeError:
+        pass
+
+    # 3) 마지막으로 ISO-8859-1 같은 범용 인코딩
+    file_obj.seek(0)
+    return pd.read_csv(file_obj, encoding="iso-8859-1", errors="replace")
+
+
 def detect_cost_columns(df):
     """
     Q-COST 관련 컬럼 자동 탐지 (추천용)
@@ -253,6 +278,14 @@ def train_models_regression(X, y):
 
     return results, (X_train, X_test, y_train, y_test)
 
+def remove_failure_related_features(X, failure_cols):
+    """
+    실패비용 관련 컬럼(내부/외부/통합)을 X(입력 특징)에서 제거하여
+    모델 누출(leakage)을 방지한다.
+    """
+    failure_cols = [c for c in failure_cols if c in X.columns]
+    return X.drop(columns=failure_cols, errors="ignore")
+
 
 def plot_feature_importance(model, feature_names, title="Feature Importance"):
     # (그래프용 함수 – 지금은 호출하지 않지만 남겨둠)
@@ -296,30 +329,33 @@ def plot_shap_summary_tree(model, X_train, feature_names, title="SHAP Summary"):
         plt.close()
 
 
-def build_scenario_result(df, cost_cols):
+def build_scenario_result(df, cost_cols, failure_col_name=None):
     """
     예방/평가 비용을 변경했을 때 실패비용 변화 시뮬레이션
-    - 실패비용 = 내부 실패 + 외부 실패
+    - 실패비용: 사용자가 지정한 통합 실패비용 컬럼 또는 내부/외부 실패비용 합계
     - 타깃: 실패비용 (회귀)
     """
-    prevention_cols = cost_cols["prevention"]
-    appraisal_cols = cost_cols["appraisal"]
-    internal_failure_cols = cost_cols["internal_failure"]
-    external_failure_cols = cost_cols["external_failure"]
+    # 예방/평가 비용 컬럼
+    prevention_cols = cost_cols.get("prevention", [])
+    appraisal_cols = cost_cols.get("appraisal", [])
+    internal_failure_cols = cost_cols.get("internal_failure", [])
+    external_failure_cols = cost_cols.get("external_failure", [])
 
-    # 필요한 컬럼 없는 경우 처리
-    if not internal_failure_cols and not external_failure_cols:
-        return None, "내부/외부 실패비용 컬럼을 찾을 수 없습니다."
-
+    # 숫자형 데이터만 사용
     df_num = df.select_dtypes(include=[np.number]).copy()
 
-    # 실패 비용 타깃
-    failure_cols = internal_failure_cols + external_failure_cols
-    failure_cols = [c for c in failure_cols if c in df_num.columns]
+    # 1) 우선 사용자가 지정한 통합 실패비용 컬럼을 사용
+    failure_cols = []
+    if failure_col_name is not None and failure_col_name in df_num.columns:
+        failure_cols = [failure_col_name]
+    else:
+        # 2) 통합 실패비용 컬럼이 없으면 내부/외부 실패비용 합산
+        failure_cols = [c for c in (internal_failure_cols + external_failure_cols) if c in df_num.columns]
 
     if not failure_cols:
-        return None, "실패비용(내부/외부) 수치 컬럼이 없습니다."
+        return None, "실패비용(타깃) 수치 컬럼을 찾을 수 없습니다. 통합 실패비용 컬럼을 지정하거나 내부/외부 실패비용 컬럼을 선택해 주세요."
 
+    # 실패비용 타깃 생성
     df_num["failure_cost"] = df_num[failure_cols].sum(axis=1)
 
     # 특징 변수로 사용할 후보 (예방 + 평가 비용 포함)
@@ -338,6 +374,12 @@ def build_scenario_result(df, cost_cols):
 
     X = data[feature_cols]
     y = data["failure_cost"]
+
+    failure_related_cols = internal_failure_cols + external_failure_cols
+    if failure_col_name is not None:
+        failure_related_cols.append(failure_col_name)
+
+    X = remove_failure_related_features(X, failure_related_cols)
 
     results, (X_train, X_test, y_train, y_test) = train_models_regression(X, y)
 
@@ -505,10 +547,9 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**파일 업로드 후 분석 칼럼을 지정해주세요**")
-    st.markdown("**이후 자동으로:**")
-    st.markdown("- 회귀, 랜덤포레스트, XGBoost")
-    st.markdown("- SHAP 중요도 분석")
-    st.markdown("- 예방/평가비용 시나리오 분석을 시작합니다.")
+    st.markdown("**이후 자동으로**")
+    st.markdown("**회귀, 랜덤포레스트, XGBoost, SHAP 중요도 분석을 시작합니다.**")
+    st.markdown("**예방/평가비용 시나리오도 적용해볼 수 있습니다.**")
 
 tab_analysis, tab_chat = st.tabs(["자동 Q-COST 분석", "Q-COST AI 대화"])
 
@@ -517,7 +558,7 @@ if "analysis_summary" not in st.session_state:
     st.session_state["analysis_summary"] = ""
 
 with tab_analysis:
-    st.subheader("공정/품질 데이터 업로드")
+    st.subheader("데이터 업로드")
 
     uploaded_file = st.file_uploader(
         "CSV 또는 Excel 파일을 업로드하세요.",
@@ -527,9 +568,10 @@ with tab_analysis:
     if uploaded_file is not None:
         # 파일 읽기
         if uploaded_file.name.endswith(".csv"):
-            df = pd.read_csv(uploaded_file)
+            df = read_csv_auto(uploaded_file)
         else:
             df = pd.read_excel(uploaded_file)
+
 
         st.write("#### 원본 데이터 미리보기")
         st.dataframe(df.head())
@@ -537,9 +579,8 @@ with tab_analysis:
         # -------------------------
         # Q-COST 컬럼 자동 탐지 + 직접 지정
         # -------------------------
+        st.write("### Q-COST 비용 컬럼 지정 (예방/평가)")
         auto_cost_cols = detect_cost_columns(df)
-        st.write("### Q-COST 비용 컬럼 지정")
-
         st.caption("자동으로 찾아본 결과를 기본값으로 넣어두었어요. 필요하면 드롭다운에서 직접 바꿔주세요.")
 
         all_columns = list(df.columns)
@@ -552,20 +593,36 @@ with tab_analysis:
                 default=auto_cost_cols["prevention"],
                 help="예방 활동, 교육, 설비 개선 등에 쓰이는 비용 컬럼을 선택하세요."
             )
+        with col2:
             appraisal_selected = st.multiselect(
                 "평가/검사비용 컬럼 선택",
                 options=all_columns,
                 default=auto_cost_cols["appraisal"],
                 help="검사, 시험, 품질점검에 들어가는 비용 컬럼을 선택하세요."
             )
-        with col2:
-            internal_failure_selected = st.multiselect(
+
+        # 실패비용 타깃 설정: 통합 실패비용 또는 내부/외부 실패비용 합산
+        st.write("### 실패비용(타깃) 컬럼 설정")
+        st.caption("데이터에 이미 '실패비용'이 한 컬럼으로 있으면 아래에서 바로 선택하고, 내부/외부가 나뉘어 있으면 각각의 컬럼을 선택하세요.")
+
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+
+        failure_single_col = st.selectbox(
+            "통합 실패비용 컬럼 (있는 경우)",
+            options=["(없음)"] + list(numeric_cols),
+            index=0
+        )
+
+        col3, col4 = st.columns(2)
+        with col3:
+            failure_internal_cols = st.multiselect(
                 "내부 실패비용 컬럼 선택",
                 options=all_columns,
                 default=auto_cost_cols["internal_failure"],
                 help="공정 안에서 발생하는 불량, 재작업, 스크랩 비용 컬럼을 선택하세요."
             )
-            external_failure_selected = st.multiselect(
+        with col4:
+            failure_external_cols = st.multiselect(
                 "외부 실패비용 컬럼 선택",
                 options=all_columns,
                 default=auto_cost_cols["external_failure"],
@@ -576,20 +633,55 @@ with tab_analysis:
         cost_cols = {
             "prevention": prevention_selected,
             "appraisal": appraisal_selected,
-            "internal_failure": internal_failure_selected,
-            "external_failure": external_failure_selected,
+            "internal_failure": failure_internal_cols,
+            "external_failure": failure_external_cols,
         }
+
+        failure_auto_col = None
+
+        # 내부/외부 실패비용이 각각 선택된 경우 자동 합산 컬럼 생성
+        failure_source_cols = [
+            c for c in (failure_internal_cols + failure_external_cols)
+            if c in numeric_cols
+        ]
+
+        # 통합 실패비용 컬럼이 따로 선택되지 않았고, 내부/외부 합산이 가능하면 자동 생성
+        if failure_single_col == "(없음)" and failure_source_cols:
+            failure_auto_col = "FAILURE_COST_AUTO"
+            # 이미 같은 이름이 있으면 덮어쓰지 않고 이름 변경
+            suffix = 1
+            while failure_auto_col in df.columns:
+                failure_auto_col = f"FAILURE_COST_AUTO_{suffix}"
+                suffix += 1
+
+            df[failure_auto_col] = df[failure_source_cols].sum(axis=1)
+
+            st.info(
+                f"내부/외부 실패비용 컬럼 {failure_source_cols} 를 합산하여 "
+                f"'{failure_auto_col}' 칼럼을 자동 생성했습니다. "
+                f"타깃 컬럼 선택에서 이 칼럼을 선택하면 '실패비용' 회귀 모델을 학습할 수 있습니다."
+            )
+        elif failure_single_col != "(없음)":
+            # 사용자가 명시적으로 통합 실패비용 컬럼을 지정한 경우
+            failure_auto_col = failure_single_col
 
         # -------------------------
         # 타깃 자동 탐지 및 모델링
         # -------------------------
         st.write("### 타깃(성공/실패 또는 품질 결과) 컬럼 선택")
-        detected_target = detect_target_column(df)
+        # 실패비용 분석 중심이므로, 자동 생성/지정된 실패비용 칼럼이 있으면 이를 타깃 기본값으로 사용
+        default_target = None
+        if failure_auto_col is not None and failure_auto_col in df.columns:
+            default_target = failure_auto_col
+        else:
+            default_target = detect_target_column(df)
+
         target_col = st.selectbox(
-            "타깃 컬럼을 선택하세요 (자동 탐지 결과가 기본값)",
+            "타깃 컬럼을 선택하세요 (실패비용 또는 품질 결과 컬럼)",
             options=["(사용 안 함)"] + list(df.columns),
-            index=1 + (list(df.columns).index(detected_target) if detected_target in df.columns else 0)
+            index=1 + (list(df.columns).index(default_target) if default_target in df.columns else 0)
         )
+
 
         # 숫자 컬럼만 사용 (단순화)
         numeric_df = df.select_dtypes(include=[np.number]).copy()
@@ -607,11 +699,27 @@ with tab_analysis:
 
             # 결측치 제거
             data = numeric_df.dropna(subset=[target_col])
-            if data.shape[0] < 50:
-                st.warning("유효한 데이터 행이 50개 미만입니다. 더 많은 데이터가 있으면 좋습니다.")
+            if data.shape[0] < 4:
+                st.warning("유효한 데이터 행이 4개 미만입니다. 더 많은 데이터가 있으면 좋습니다.")
             else:
                 X = data.drop(columns=[target_col])
                 y = data[target_col]
+                
+                # ---------------------------
+                # 🔥 실패비용 관련 컬럼 제거 (중요)
+                # ---------------------------
+                failure_related_cols = failure_internal_cols + failure_external_cols
+
+                # 자동 생성된 통합 실패비용
+                if failure_auto_col is not None:
+                    failure_related_cols.append(failure_auto_col)
+
+                # 사용자가 직접 선택한 통합 실패비용
+                if failure_single_col != "(없음)":
+                    failure_related_cols.append(failure_single_col)
+
+                X = remove_failure_related_features(X, failure_related_cols)
+                
 
                 st.write("### 모델 학습 결과")
 
@@ -714,10 +822,22 @@ with tab_analysis:
         else:
             st.info("타깃 컬럼을 '(사용 안 함)'이 아닌 실제 품질 결과 컬럼으로 선택하면 예측 모델이 학습됩니다.")
 
+
+        # 실패비용 시나리오에서 사용할 타깃 컬럼 결정
+        failure_target_col = None
+        # 1) 자동 생성/지정된 실패비용 컬럼이 있으면 우선 사용
+        if failure_auto_col is not None and failure_auto_col in df.select_dtypes(include=[np.number]).columns:
+            failure_target_col = failure_auto_col
+        # 2) 그렇지 않고, 현재 타깃 컬럼이 숫자형이면 그 타깃을 실패비용으로 가정
+        elif target_col != "(사용 안 함)" and target_col in df.select_dtypes(include=[np.number]).columns:
+            failure_target_col = target_col
+
         st.markdown("---")
         st.write("### 예방/평가비용을 늘렸을 때 실패비용 시나리오")
 
-        scenario_info, err = build_scenario_result(df, cost_cols)
+        scenario_info, err = build_scenario_result(df, cost_cols, failure_col_name=failure_target_col)
+
+        
         if err:
             st.warning(err)
         else:
@@ -725,9 +845,9 @@ with tab_analysis:
 
             colA, colB = st.columns(2)
             with colA:
-                prevent_pct = st.slider("예방비용 증가율 (%)", -50, 200, 0, step=10)
+                prevent_pct = st.slider("예방비용 증가율 (%)", -50, 200, 0, step=1)
             with colB:
-                appraisal_pct = st.slider("평가/검사비용 증가율 (%)", -50, 200, 0, step=10)
+                appraisal_pct = st.slider("평가/검사비용 증가율 (%)", -50, 200, 0, step=1)
 
             new_cost = scenario_info["predict_func"](
                 prevent_pct / 100.0,
@@ -742,7 +862,7 @@ with tab_analysis:
             st.write(f"- 변화량: **{diff:,.2f} ({ratio:+.1f}%)**")
 
             if diff < 0:
-                st.success("예방/평가비용을 늘렸을 때, 모델 기준으로 실패비용이 감소하는 경향이 보입니다.")
+                st.success("이 시나리오 일 때, 모델 기준으로 실패비용이 감소하는 경향이 보입니다.")
             elif diff > 0:
                 st.warning("이 데이터에서는 예방/평가비용 증가가 오히려 실패비용 증가와 함께 나타날 수도 있습니다. 실제 공정 구조를 다시 점검해 보세요.")
             else:
