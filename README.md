@@ -1,4 +1,4 @@
-[Readme.txt](https://github.com/user-attachments/files/23903284/Readme.txt)
+[Readme.txt](https://github.com/user-attachments/files/23980422/Readme.txt)
 ---
 
 # 🏷️ Q-COST AI APP (Capstone Project)
@@ -83,6 +83,6 @@
 | **Modeling**      | Scikit-learn, XGBoost, SHAP  |
 | **Backend Logic** | Python, Pandas, NumPy        |
 | **AI Assistant**  | Google Gemini API            |
-| **Infra**         | GitHub, Streamlit Cloud (선택) |
+| **Infra**         | GitHub |
 
 ----
