@@ -55,6 +55,7 @@
 
 * Logistic Regression / Linear Regression
 * **RandomForest Classifier & Regressor**
+* **CatBoost & LightGBM**
 * **XGBoost Classifier & Regressor** (옵션)
 
 #### 제공 분석
@@ -69,8 +70,8 @@
 
 ### 3️⃣ Q-COST 시나리오 분석
 
-* 예방비용 / 평가비용을 **±50 ~ 200%** 조정
-* 조정된 비용 시나리오에 따른 **내부·외부 실패비용 변화 예측**
+* 예방비용 / 평가비용 비율을 **0 ~ 100%** 조정
+* 조정된 비용 시나리오에 따른 **실패비용 변화와 전체 품질비용 예측**
 * RandomForest 회귀 기반 시뮬레이션 엔진
 
 ---
