@@ -31,7 +31,7 @@
 ## 🎯 주요 목표
 
 * Q-COST 비용 구조 자동 파악
-* **RandomForest / XGBoost / Logistic·Linear Regression** 기반 품질예측
+* **RandomForest / XGBoost / Logistic·Linear Regression / CatBoost / LightGBM** 기반 품질예측
 * **SHAP DataFrame 중요도 분석** 제공
 * 예방·평가비용 조정 시 실패비용 변화 시뮬레이션 제공
 * **Gemini API 기반 Q-COST 컨설턴트 제공**
